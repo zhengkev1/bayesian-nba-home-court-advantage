@@ -1,0 +1,21 @@
+# Fitted Stan models are 1-2.5 GB each
+models/
+*.rds
+*.RData
+.Rhistory
+.Rproj.user/
+.Rapp.history
+
+# Raw Kaggle download (not redistributed here)
+data/raw/
+
+# Stan / knitr build artefacts
+*.stan
+*_cache/
+*_files/
+*.o
+*.so
+*.dll
+
+# macOS
+.DS_Store

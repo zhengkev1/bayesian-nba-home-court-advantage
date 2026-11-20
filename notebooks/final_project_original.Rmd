@@ -1,0 +1,700 @@
+---
+title: "Final_Project_NBA"
+author: "Kevin"
+date: "2026-04-23"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+require(mosaic)
+library(dplyr)
+library(ggplot2)
+library(bayesrules)
+library (rethinking)
+```
+
+```{r}
+library(tidyverse)
+library(lubridate)
+```
+
+```{r}
+games_raw <- read_csv("~/Downloads/archive/csv/game.csv")
+```
+```{r}
+season_dates <- tibble(
+  actual_season = c("14_15", "15_16", "16_17", "17_18", "18_19"),
+  season_start = as.Date(c(
+    "2014-10-28",
+    "2015-10-27",
+    "2016-10-25",
+    "2017-10-17",
+    "2018-10-16"
+  )),
+  season_end = as.Date(c(
+    "2015-04-15",
+    "2016-04-13",
+    "2017-04-12",
+    "2018-04-11",
+    "2019-04-10"
+  ))
+)
+
+games_raw <- games_raw %>%
+  mutate(
+    game_date = as.Date(game_date)
+  )
+
+games_with_season <- games_raw %>%
+  left_join(
+    season_dates,
+    by = join_by(game_date >= season_start, game_date <= season_end)
+  )
+
+keep_seasons <- c("14_15", "15_16", "16_17", "17_18")
+
+games_filtered <- games_with_season %>%
+  filter(
+    actual_season %in% keep_seasons,
+    season_type == "Regular Season"
+  )
+```
+
+```{r}
+home_games <- games_filtered %>%
+  transmute(
+    game_id,
+    game_date,
+    actual_season,
+    season_type,
+    
+    team_id = team_id_home,
+    team_abbreviation = team_abbreviation_home,
+    team_name = team_name_home,
+    
+    opponent_id = team_id_away,
+    opponent_abbreviation = team_abbreviation_away,
+    opponent_name = team_name_away,
+    
+    home = 1,
+    win = if_else(pts_home > pts_away, 1, 0),
+    
+    team_score = pts_home,
+    opp_score = pts_away,
+    
+    fgm = fgm_home,
+    fga = fga_home,
+    fg_pct = fg_pct_home,
+    fg3m = fg3m_home,
+    fg3a = fg3a_home,
+    fg3_pct = fg3_pct_home,
+    ftm = ftm_home,
+    fta = fta_home,
+    ft_pct = ft_pct_home,
+    oreb = oreb_home,
+    dreb = dreb_home,
+    reb = reb_home,
+    ast = ast_home,
+    stl = stl_home,
+    blk = blk_home,
+    tov = tov_home,
+    pf = pf_home,
+    plus_minus = plus_minus_home
+  )
+```
+
+```{r}
+away_games <- games_filtered %>%
+  transmute(
+    game_id,
+    game_date,
+    actual_season,
+    season_type,
+    
+    team_id = team_id_away,
+    team_abbreviation = team_abbreviation_away,
+    team_name = team_name_away,
+    
+    opponent_id = team_id_home,
+    opponent_abbreviation = team_abbreviation_home,
+    opponent_name = team_name_home,
+    
+    home = 0,
+    win = if_else(pts_away > pts_home, 1, 0),
+    
+    team_score = pts_away,
+    opp_score = pts_home,
+    
+    fgm = fgm_away,
+    fga = fga_away,
+    fg_pct = fg_pct_away,
+    fg3m = fg3m_away,
+    fg3a = fg3a_away,
+    fg3_pct = fg3_pct_away,
+    ftm = ftm_away,
+    fta = fta_away,
+    ft_pct = ft_pct_away,
+    oreb = oreb_away,
+    dreb = dreb_away,
+    reb = reb_away,
+    ast = ast_away,
+    stl = stl_away,
+    blk = blk_away,
+    tov = tov_away,
+    pf = pf_away,
+    plus_minus = plus_minus_away
+  )
+```
+
+```{r}
+team_game_data <- bind_rows(home_games, away_games) %>%
+  arrange(team_id, actual_season, game_date, game_id)
+```
+
+```{r}
+team_game_data <- team_game_data %>%
+  group_by(team_id, actual_season) %>%
+  arrange(game_date, game_id, .by_group = TRUE) %>%
+  mutate(
+    days_since_last = as.numeric(game_date - lag(game_date)),
+    b2b = if_else(!is.na(days_since_last) & days_since_last == 1, 1, 0)
+  ) %>%
+  ungroup()
+```
+
+```{r}
+team_game_data %>%
+  count(actual_season)
+```
+
+```{r}
+glimpse(team_game_data)
+```
+
+
+
+```{r}
+write_csv(team_game_data, "new_team_game_data_2016_2018.csv")
+```
+
+```{r}
+nba_raw <- read_csv("~/Desktop/Bayesian Analysis/new_team_game_data_2016_2018.csv")
+```
+```{r}
+library(tidyverse)
+library(lubridate)
+library(rethinking)
+```
+
+```{r}
+nba_raw <- nba_raw %>%
+  mutate(
+    game_date = as.Date(game_date)
+  )
+
+nba_clean <- nba_raw %>%
+  mutate(
+    nba_season = case_when(
+      game_date >= as.Date("2014-10-28") & game_date <= as.Date("2015-04-15") ~ "14_15",
+      game_date >= as.Date("2015-10-27") & game_date <= as.Date("2016-04-13") ~ "15_16",
+      game_date >= as.Date("2016-10-25") & game_date <= as.Date("2017-04-12") ~ "16_17",
+      game_date >= as.Date("2017-10-17") & game_date <= as.Date("2018-04-11") ~ "17_18",
+      game_date >= as.Date("2018-10-16") & game_date <= as.Date("2019-04-10") ~ "18_19",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  filter(
+    nba_season %in% c("14_15", "15_16", "16_17","17_18", "18_19"),
+    season_type == "Regular Season"
+  )
+
+```
+
+```{r}
+nba_clean %>%
+  count(nba_season)
+
+nba_clean %>%
+  summarise(
+    n_rows = n(),
+    n_games = n_distinct(game_id),
+    n_teams = n_distinct(team_id),
+    home_win_rate = mean(win[home == 1]),
+    away_win_rate = mean(win[home == 0]),
+    b2b_rate = mean(b2b)
+  )
+```
+
+```{r}
+nba_clean <- nba_clean %>%
+  select(
+    game_id,
+    game_date,
+    nba_season,
+    team_id,
+    team_abbreviation,
+    team_name,
+    opponent_id,
+    opponent_abbreviation,
+    opponent_name,
+    home,
+    win,
+    b2b,
+    team_score,
+    opp_score,
+    tov,
+    ft_pct
+  ) %>%
+  drop_na(win, home, b2b, team_id, opponent_id)
+```
+
+```{r}
+team_key <- nba_clean %>%
+  select(team_id, team_abbreviation, team_name) %>%
+  distinct() %>%
+  arrange(team_id) %>%
+  mutate(team_index = row_number())
+
+nba_model <- nba_clean %>%
+  left_join(
+    team_key %>% select(team_id, team_index),
+    by = "team_id"
+  ) %>%
+  rename(team = team_index) %>%
+  left_join(
+    team_key %>% select(team_id, team_index),
+    by = c("opponent_id" = "team_id")
+  ) %>%
+  rename(opponent = team_index) %>%
+  mutate(
+    tov_z = as.numeric(scale(tov)),
+    ft_pct_z = as.numeric(scale(ft_pct))
+  )
+
+N_team <- n_distinct(nba_model$team)
+```
+
+```{r}
+dat <- list(
+  N = nrow(nba_model),
+  win = nba_model$win,
+  home = nba_model$home,
+  b2b = nba_model$b2b,
+  team = nba_model$team,
+  opponent = nba_model$opponent,
+  N_team = N_team,
+  tov_z = nba_model$tov_z,
+  ft_pct_z = nba_model$ft_pct_z
+)
+```
+
+```{r}
+m4 <- ulam(
+  alist(
+    win ~ dbinom(1, p),
+    logit(p) <- a +
+      strength[team] -
+      strength[opponent] +
+      (b_home + u_home[team]) * home +
+      b_b2b * b2b,
+
+    strength[team] ~ dnorm(0, sigma_strength),
+    u_home[team] ~ dnorm(0, sigma_home),
+
+    a ~ dnorm(0, 1.5),
+    b_home ~ dnorm(0, 1),
+    b_b2b ~ dnorm(0, 1),
+
+    sigma_strength ~ dexp(1),
+    sigma_home ~ dexp(1)
+  ),
+  data = dat,
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+warmup = 2000,
+  log_lik = TRUE
+)
+
+```
+```{r}
+summary_m4 <- precis(m4, depth = 2)
+```
+
+
+```{r}
+summary_m4_df <- as.data.frame(summary_m4) %>%
+  rownames_to_column("parameter")
+
+write_csv(summary_m4_df, "summary_m4_all_parameters.csv")
+
+saveRDS(summary_m4_df, "summary_m4_all_parameters.rds")
+```
+
+```{r}
+rm(m4)
+
+rm(post_m4, team_home_effect_m4)
+
+rm(summary_m4)
+
+gc()
+```
+
+
+
+```{r}
+m3 <- ulam(
+  alist(
+    win ~ dbinom(1, p),
+    logit(p) <- a_team[team] + b_home * home + b_b2b * b2b,
+
+    a_team[team] ~ dnorm(a_bar, sigma_a),
+
+    a_bar ~ dnorm(0, 1.5),
+    sigma_a ~ dexp(1),
+
+    b_home ~ dnorm(0, 1),
+    b_b2b ~ dnorm(0, 1)
+  ),
+  data = dat,
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 1500,
+  log_lik = TRUE
+)
+
+```
+```{r}
+summary_m3 <- precis(m3, depth = 2)
+
+```
+
+```{r}
+m3_csv <- summary_m3 %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("parameter") %>%
+  as_tibble() %>%
+  mutate(model = "Model 3: Team intercepts") %>%
+  select(model, parameter, mean, sd, `5.5%`, `94.5%`, rhat, ess_bulk)
+
+write_csv(m3_csv, "m3_summary.csv")
+```
+
+```{r}
+rm(list = intersect(
+  c("m3", "summary_m3", "m3_csv"),
+  ls()
+))
+
+gc()
+```
+
+
+
+
+
+```{r}
+m1 <- ulam(
+  alist(
+    win ~ dbinom(1, p),
+    logit(p) <- a + (b_home + u_team[team]) * home + b_b2b * b2b,
+
+    u_team[team] ~ dnorm(0, sigma_u),
+
+    a ~ dnorm(0, 1.5),
+    b_home ~ dnorm(0, 1),
+    b_b2b ~ dnorm(0, 1),
+
+    sigma_u ~ dexp(1)
+  ),
+  data = dat,
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 1500,
+  log_lik = TRUE
+)
+
+```
+
+```{r}
+summary_m1 <- precis(m1, depth = 2)
+```
+
+```{r}
+m1_csv <- summary_m1 %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("parameter") %>%
+  as_tibble() %>%
+  mutate(model = "Model 1: Team home slopes") %>%
+  select(model, parameter, mean, sd, `5.5%`, `94.5%`, rhat, ess_bulk)
+
+write_csv(m1_csv, "m1_summary.csv")
+```
+
+```{r}
+rm(list = intersect(
+  c("m1", "summary_m1", "w_m1", "m1_csv"),
+  ls()
+))
+
+gc()
+```
+
+
+
+
+
+```{r}
+
+
+nba_model7 <- nba_model %>%
+  drop_na(win, home, b2b, team, tov, ft_pct) %>%
+  mutate(
+    tov_z = as.numeric(scale(tov)),
+    ft_pct_z = as.numeric(scale(ft_pct))
+  )
+
+dat7 <- list(
+  N = nrow(nba_model7),
+  win = nba_model7$win,
+  home = nba_model7$home,
+  b2b = nba_model7$b2b,
+  team = nba_model7$team,
+  N_team = max(nba_model7$team),
+  tov_z = nba_model7$tov_z,
+  ft_pct_z = nba_model7$ft_pct_z
+)
+
+m7 <- ulam(
+  alist(
+    win ~ dbinom(1, p),
+
+    logit(p) <- a +
+      (b_home + u_team[team]) * home +
+      b_b2b * b2b +
+      b_tov * tov_z +
+      b_ft * ft_pct_z,
+
+    u_team[team] ~ dnorm(0, sigma_u),
+
+    a ~ dnorm(0, 1.5),
+    b_home ~ dnorm(0, 1),
+    b_b2b ~ dnorm(0, 1),
+    b_tov ~ dnorm(0, 1),
+    b_ft ~ dnorm(0, 1),
+
+    sigma_u ~ dexp(1)
+  ),
+  data = dat7,
+  chains = 4,
+  cores = 4,
+  iter = 4000,
+  warmup = 1000,
+  log_lik = TRUE
+)
+
+```
+
+```{r}
+summary_m7 <- precis(m7, depth = 2)
+```
+
+```{r}
+m7_csv <- summary_m7 %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("parameter") %>%
+  as_tibble() %>%
+  mutate(model = "Model 7: Exploratory full model") %>%
+  select(model, parameter, mean, sd, `5.5%`, `94.5%`, rhat, ess_bulk)
+
+write_csv(m7_csv, "m7_summary.csv")
+```
+
+```{r}
+rm(list = intersect(
+  c("m7", "summary_m7", "w_m7", "m7_csv"),
+  ls()
+))
+
+gc()
+```
+
+
+
+```{r}
+m_team_intercept <- m3  
+m_team_home <- m1        
+m_strength_home <- m4     
+m_exploratory <- m7       
+```
+
+```{r}
+WAIC(m_team_intercept)
+```
+
+```{r}
+w_team_intercept <- WAIC(m_team_intercept)
+gc()
+
+w_team_home <- WAIC(m_team_home)
+gc()
+
+w_strength_home <- WAIC(m_strength_home)
+gc()
+
+w_exploratory <- WAIC(m_exploratory)
+gc()
+```
+
+```{r}
+saveRDS(m3, "m3_team_intercept.rds")
+saveRDS(m4, "m4_strength_home.rds")
+saveRDS(m7, "m7_exploratory.rds")
+```
+
+```{r}
+rm(post3, post4, post7, y_sim, y_sim_7)
+gc()
+```
+
+```{r}
+object_sizes <- tibble(
+  object = ls(),
+  size_mb = sapply(ls(), function(x) {
+    as.numeric(object.size(get(x))) / 1024^2
+  })
+) %>%
+  arrange(desc(size_mb))
+
+object_sizes
+```
+
+
+
+
+```{r}
+
+psis_compare <- compare(
+  m_team_intercept,
+  m_team_home,
+  m_strength_home,
+  m_exploratory,
+  func = PSIS
+)
+
+psis_compare
+```
+
+```{r}
+
+ggplot(
+  waic_table,
+  aes(x = reorder(model, WAIC), y = WAIC)
+) +
+  geom_point(size = 3) +
+  coord_flip() +
+  labs(
+    title = "Model Comparison Using WAIC",
+    subtitle = "Lower WAIC indicates better expected predictive performance",
+    x = "Model",
+    y = "WAIC"
+  )
+```
+
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(rethinking)
+```
+
+```{r}
+getwd()
+list.files()
+```
+
+```{r}
+setwd("~/Desktop/Bayesian Analysis")
+```
+
+```{r}
+list.files()
+```
+
+```{r}
+glimpse(nba_model)
+head(team_key)
+```
+
+```{r}
+m3 <- readRDS("m3_team_intercept.rds")
+
+w_m3 <- WAIC(m3)
+
+saveRDS(w_m3, "waic_m3.rds")
+
+rm(m3)
+gc()
+```
+
+```{r}
+m4 <- readRDS("m4_strength_home.rds")
+
+w_m4 <- WAIC(m4)
+
+saveRDS(w_m4, "waic_m4.rds")
+
+rm(m4)
+gc()
+```
+
+```{r}
+m7 <- readRDS("m7_exploratory.rds")
+
+w_m7 <- WAIC(m7)
+
+saveRDS(w_m7, "waic_m7.rds")
+
+rm(m7)
+gc()
+```
+
+```{r}
+w_m3 <- readRDS("waic_m3.rds")
+w_m4 <- readRDS("waic_m4.rds")
+w_m7 <- readRDS("waic_m7.rds")
+
+waic_table <- tibble(
+  model = c(
+    "Model 3: Team intercepts",
+    "Model 4: Strength + team home",
+    "Model 7: Exploratory full model"
+  ),
+  WAIC = c(w_m3$WAIC, w_m4$WAIC, w_m7$WAIC),
+  lppd = c(w_m3$lppd, w_m4$lppd, w_m7$lppd),
+  penalty = c(w_m3$penalty, w_m4$penalty, w_m7$penalty),
+  std_err = c(w_m3$std_err, w_m4$std_err, w_m7$std_err)
+) %>%
+  arrange(WAIC) %>%
+  mutate(
+    dWAIC = WAIC - min(WAIC),
+    WAIC_per_obs = WAIC / nrow(nba_model)
+  )
+
+waic_table
+
+write_csv(waic_table, "waic_table.csv")
+```
+
+
+
+
+
+
